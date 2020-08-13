@@ -7,5 +7,5 @@ Dataset :
     MNIST
     CIFAR10
     
-Link: [WanDB workspace][https://app.wandb.ai/jeoni/CIFAR!0?workspace=user-jeoni]
+Link: [WanDB workspace](https://app.wandb.ai/jeoni/CIFAR!0?workspace=user-jeoni)
 
