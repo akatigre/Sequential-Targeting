@@ -39,7 +39,7 @@ def data_loader(batch_size = 128):
 
     return train_dataset, test_dataset, train_loader, test_loader, class_names, nb_classes
 
-def data_balancer(proportion = ([0.5] * 9, [1]), batch_size = 128,A_idx = [800,200,2200], B_idx = [1600,4000,4400]):
+def data_balancer(proportion = ([0.5] * 9, [1]), batch_size = 128, A_idx = [800,2000,2200], B_idx = [1600,4000,4400], imbal_class_count = 9):
     train_dataset, test_dataset, train_loader, test_loader, class_names, nb_classes = data_loader()
     train_targets = np.array(train_dataset.targets)
     test_targets = np.array(test_dataset.targets)
@@ -127,7 +127,7 @@ def data_balancer(proportion = ([0.5] * 9, [1]), batch_size = 128,A_idx = [800,2
 
     # TODO : eta 4:6
     for i in range(nb_classes):
-        if i <= 4:
+        if i <= imbal_class_count:
 
             trainA_indices.extend(
                 train_class_indices[i][:A_idx[0]])
@@ -160,7 +160,6 @@ def data_balancer(proportion = ([0.5] * 9, [1]), batch_size = 128,A_idx = [800,2
     trainB_sampler = SubsetRandomSampler(trainB_indices)
     valA_sampler = SubsetRandomSampler(valA_indices)
     valB_sampler = SubsetRandomSampler(valB_indices)
-
 
     trainA_loader = DataLoader(
         dataset=train_dataset,

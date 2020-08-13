@@ -39,21 +39,25 @@ if __name__ == '__main__':
     utils.xavier_initialize(model)
 
     # prepare the cuda if needed.
-    if cuda:
-        model.cuda()
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    # if cuda:
+    #     model.cuda()
+    # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # model = model.to(device)
     # optimizer = optim.SGD(model.parameters(), lr=1e-3, momentum=0.9)
     # print(model)
     # wandb.init(
     #     project='CIFAR!0',
     #     config=config,
-    #     name="Baseline p=2 mu=0.9")
-    # model, train_loss, valid_loss = train(model, train_loader, valid_loader, n_epochs=100)
+    #     name="Baseline")
+    #
+    # model, train_loss, valid_loss = train(model, train_loader, valid_loader, wandb_log = False, patience =5, n_epochs=10)
     # evaluate(model, test_loader)
     #
 
-
+    ##############################
+    #########Seq Boost############
+    ##############################
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = Net()
     model = model.to(device)
 
@@ -62,10 +66,10 @@ if __name__ == '__main__':
             print('param {}, not on GPU'.format(name))
 
     optimizer = optim.SGD(model.parameters(), lr=config['learning_rate'], momentum=config['momentum'])
-    mid_model, train_loss, valid_loss = train(model, trainA_loader, validA_loader, wandb_log = False, patience = 15, consolidate = True, n_epochs=config['epoch'])
+    mid_model, train_loss, valid_loss = train(model, trainA_loader, validA_loader, wandb_log = False, patience = 15, consolidate = False, n_epochs=config['epoch'])
     wandb.init(
         project='CIFAR!0',
         config=config,
         name='SeqBoost(EWC) p=2 mu=0.9 eta=4:6')
-    model, train_loss, valid_loss = train(mid_model, trainB_loader, validB_loader, patience = 15, n_epochs=config['epoch'])
+    model, train_loss, valid_loss = train(mid_model, trainB_loader, validB_loader, patience = 15, consolidate = True, n_epochs=config['epoch'])
     evaluate(model, test_loader)

@@ -112,7 +112,10 @@ def train(model, train_loader, valid_loader, wandb_log = True, consolidate = Fal
             # calculate the loss
             criterion = nn.CrossEntropyLoss()
             ce_loss = criterion(output, target)
-            e_loss = model.ewc_loss(cuda = cuda)
+            cuda = torch.cuda.is_available()
+            e_loss = 0
+            if consolidate:
+                e_loss = model.ewc_loss(cuda = cuda)
             loss = ce_loss + e_loss
             # backward pass: compute gradient of the loss with respect to model parameters
             loss.backward()
@@ -126,7 +129,7 @@ def train(model, train_loader, valid_loader, wandb_log = True, consolidate = Fal
 
         print("Training DONE!")
 
-        if consolidate == True:
+        if consolidate:
             model.consolidate(model.estimate_fisher(
                 train_loader, fisher_estimation_sample_size
             ))
