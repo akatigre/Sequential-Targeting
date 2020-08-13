@@ -105,9 +105,6 @@ def train(model, train_loader, valid_loader, wandb_log = True, consolidate = Fal
             dataset_size = len(train_loader.dataset)
             dataset_batches = len(train_loader)
 
-            # data = Variable(data).cuda() if cuda else Variable(data)
-            # target = Variable(target).cuda() if cuda else Variable(target)
-
             # clear the gradients of all optimized variables
             optimizer.zero_grad()
             # forward pass: compute predicted outputs by passing inputs to the model
@@ -230,8 +227,9 @@ def train(model, train_loader, valid_loader, wandb_log = True, consolidate = Fal
 
 def evaluate(model, test_loader, wandb_log = True, nb_classes = 10, class_names = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse',
                'ship', 'truck')):
-    model.eval()
+
     model.to(device)
+    model.eval()
     correct_list = list(0. for i in range(10))
     total_list = list(0. for i in range(10))
     correct = 0

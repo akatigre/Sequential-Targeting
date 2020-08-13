@@ -53,20 +53,19 @@ if __name__ == '__main__':
     # evaluate(model, test_loader)
     #
 
-    wandb.init(
-        project='CIFAR!0',
-        config=config,
-        name='SeqBoost(EWC) p=2 mu=0.9 eta=4:6')
-
 
     model = Net()
     model = model.to(device)
-    optimizer = optim.SGD(model.parameters(), lr=config['learning_rate'], momentum=config['momentum'])
-    model, train_loss, valid_loss = train(model, trainA_loader, validA_loader, wandb_log = False, consolidate = True, n_epochs=config['epoch'])
 
+    for name, param in model.named_parameters():
+        if param.device.type != 'cuda':
+            print('param {}, not on GPU'.format(name))
+
+    optimizer = optim.SGD(model.parameters(), lr=config['learning_rate'], momentum=config['momentum'])
+    mid_model, train_loss, valid_loss = train(model, trainA_loader, validA_loader, wandb_log = False, patience = 15, consolidate = True, n_epochs=config['epoch'])
     wandb.init(
         project='CIFAR!0',
         config=config,
         name='SeqBoost(EWC) p=2 mu=0.9 eta=4:6')
-    model, train_loss, valid_loss = train(model, trainB_loader, validB_loader, n_epochs=config['epoch'])
+    model, train_loss, valid_loss = train(mid_model, trainB_loader, validB_loader, patience = 15, n_epochs=config['epoch'])
     evaluate(model, test_loader)
