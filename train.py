@@ -76,7 +76,7 @@ class EWC(object):
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-def train(model, train_loader, valid_loader, consolidate = False, nb_class = 10, patience = 10, n_epochs =100, lr = 1e-3, weight_decay = 1e-5, fisher_estimation_sample_size = 1024, cuda = False):
+def train(model, train_loader, valid_loader, wandb_log = True, consolidate = False, nb_class = 10, patience = 10, n_epochs =100, lr = 1e-3, weight_decay = 1e-5, fisher_estimation_sample_size = 1024, cuda = False):
     # to track the training loss as the model trains
     train_losses = []
     # to track the validation loss as the model trains
@@ -205,7 +205,8 @@ def train(model, train_loader, valid_loader, consolidate = False, nb_class = 10,
                      f'valid_loss: {valid_loss:.5f}')
 
         print(print_msg)
-        wandb.log({"Precision(valid)": precision, "Recall(valid)": recall, "F1 Score(valid)": macro_f1,
+        if wandb_log:
+            wandb.log({"Precision(valid)": precision, "Recall(valid)": recall, "F1 Score(valid)": macro_f1,
                    "Accuracy(valid)": accuracy}, step=epoch)
 
         # clear lists to track next epoch
@@ -227,7 +228,7 @@ def train(model, train_loader, valid_loader, consolidate = False, nb_class = 10,
     return model, avg_train_losses, avg_valid_losses
 
 
-def evaluate(model, test_loader, nb_classes = 10, class_names = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse',
+def evaluate(model, test_loader, wandb_log = True, nb_classes = 10, class_names = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse',
                'ship', 'truck')):
     model.eval()
     model.to(device)
@@ -257,7 +258,8 @@ def evaluate(model, test_loader, nb_classes = 10, class_names = ('plane', 'car',
 
     # Calculate global accuracy
     accuracy = sum(correct_list) / sum(total_list)
-    wandb.log({"accuracy": accuracy})
+    if wandb_log:
+        wandb.log({"accuracy": accuracy})
 
     # Calculate class accuracies
     class_correct = confusion_matrix.diag()
@@ -297,10 +299,11 @@ def evaluate(model, test_loader, nb_classes = 10, class_names = ('plane', 'car',
     for i in range(nb_classes):
         print('Accuracy for {}: {:.3f}%'.format(
             class_names[i], 100 * class_accuracies[i]))
-        wandb.log({f"Accuracy of class {class_names[i]}": class_accuracies[i] * 100})
-
-    wandb.log(
-        {"Precision(test)": precision, "Recall(test)": recall, "F1 Score(test)": macro_f1, "Accuracy(test)": accuracy})
+        if wandb_log:
+            wandb.log({f"Accuracy of class {class_names[i]}": class_accuracies[i] * 100})
+    if wandb_log:
+        wandb.log(
+            {"Precision(test)": precision, "Recall(test)": recall, "F1 Score(test)": macro_f1, "Accuracy(test)": accuracy})
 
     # Plot confusion matrix
     f = plt.figure()
@@ -309,4 +312,5 @@ def evaluate(model, test_loader, nb_classes = 10, class_names = ('plane', 'car',
     f.colorbar(cax)
     plt.xticks(range(len(class_names)), class_names, rotation=90)
     plt.yticks(range(len(class_names)), class_names)
-    wandb.log({"Confusion Matrix": plt})
+    if wandb_log:
+        wandb.log({"Confusion Matrix": plt})

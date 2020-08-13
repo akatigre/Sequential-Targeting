@@ -62,6 +62,11 @@ if __name__ == '__main__':
     model = Net()
     model = model.to(device)
     optimizer = optim.SGD(model.parameters(), lr=config['learning_rate'], momentum=config['momentum'])
-    model, train_loss, valid_loss = train(model, trainA_loader, validA_loader, consolidate = True, n_epochs=config['epoch'])
-    model, train_loss, valid_loss = train(model, trainB_loader, validB_loader, consolidate = True, n_epochs=config['epoch'])
+    model, train_loss, valid_loss = train(model, trainA_loader, validA_loader, wandb_log = False, consolidate = True, n_epochs=config['epoch'])
+
+    wandb.init(
+        project='CIFAR!0',
+        config=config,
+        name='SeqBoost(EWC) p=2 mu=0.9 eta=4:6')
+    model, train_loss, valid_loss = train(model, trainB_loader, validB_loader, n_epochs=config['epoch'])
     evaluate(model, test_loader)
