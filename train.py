@@ -76,7 +76,7 @@ class EWC(object):
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-def train(model, train_loader, valid_loader, wandb_log = True, consolidate = False, nb_class = 10, patience = 10, n_epochs =100, lr = 1e-3, weight_decay = 1e-5, fisher_estimation_sample_size = 1024, cuda = False):
+def train(model, train_loader, valid_loader, wandb_log = True, consolidate = False, nb_class = 10, patience = 10, n_epochs =100, lr = 1e-3, weight_decay = 1e-5, fisher_estimation_sample_size = 300, cuda = False):
     # to track the training loss as the model trains
     train_losses = []
     # to track the validation loss as the model trains
