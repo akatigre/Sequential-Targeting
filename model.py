@@ -7,55 +7,25 @@ from torch.autograd import Variable
 import utils
 
 class MLP(nn.Module):
-    def __init__(self, input_size, output_size,
-                 hidden_size=400,
-                 hidden_layer_num=2,
-                 hidden_dropout_prob=.5,
-                 input_dropout_prob=.2,
-                 lamda=40):
-        # Configurations.
-        super().__init__()
-        self.input_size = input_size
-        self.input_dropout_prob = input_dropout_prob
-        self.hidden_size = hidden_size
-        self.hidden_layer_num = hidden_layer_num
-        self.hidden_dropout_prob = hidden_dropout_prob
-        self.output_size = output_size
-        self.lamda = lamda
+    def __init__(self):
+        super(MLP,self).__init__()
+        hidden_1 = 512
+        hidden_2 = 512
+        self.fc1 = nn.Linear(28*28, 512)
+        self.fc2 = nn.Linear(512,512)
+        self.fc3 = nn.Linear(512,10)
+        self.droput = nn.Dropout(0.2)
+        
+    def forward(self,x):
+        x = x.view(-1, 28*28)
+        x = F.relu(self.fc1(x))
+        x = self.droput(x)
+        x = F.relu(self.fc2(x))
+        x = self.droput(x)
+        x = self.fc3(x)
+        return x
 
-        # Layers.
-        self.layers = nn.ModuleList([
-            nn.Linear(self.input_size, self.hidden_size), nn.ReLU(),
-            nn.Dropout(self.input_dropout_prob),
-            # hidden
-            *((nn.Linear(self.hidden_size, self.hidden_size), nn.ReLU(),
-               nn.Dropout(self.hidden_dropout_prob)) * self.hidden_layer_num),
-            # output
-            nn.Linear(self.hidden_size, self.output_size)
-        ])
-
-    @property
-    def name(self):
-        return (
-            'MLP'
-            '-lambda{lamda}'
-            '-in{input_size}-out{output_size}'
-            '-h{hidden_size}x{hidden_layer_num}'
-            '-dropout_in{input_dropout_prob}_hidden{hidden_dropout_prob}'
-        ).format(
-            lamda=self.lamda,
-            input_size=self.input_size,
-            output_size=self.output_size,
-            hidden_size=self.hidden_size,
-            hidden_layer_num=self.hidden_layer_num,
-            input_dropout_prob=self.input_dropout_prob,
-            hidden_dropout_prob=self.hidden_dropout_prob,
-        )
-
-    def forward(self, x):
-        return reduce(lambda x, l: l(x), self.layers, x)
-
-    def estimate_fisher(self, data_loader, sample_size, batch_size=32):
+    def estimate_fisher(self, data_loader, sample_size, batch_size):
         loglikelihoods = []
         for x, y in data_loader:
             x = x.view(batch_size, -1)
@@ -86,8 +56,9 @@ class MLP(nn.Module):
             self.register_buffer('{}_fisher'
                                  .format(n), fisher[n].data.clone())
 
-    def ewc_loss(self, cuda=False):
+    def ewc_loss(self):
         try:
+            cuda = torch.cuda.is_available()
             losses = []
             for n, p in self.named_parameters():
                 # retrieve the consolidated mean and fisher information.
@@ -113,47 +84,31 @@ class MLP(nn.Module):
     def _is_on_cuda(self):
         return next(self.parameters()).is_cuda
 
-IMAGE_WIDTH = 32
-IMAGE_HEIGHT = 32
-COLOR_CHANNELS = 3
-EPOCHS = 300
-LEARNING_RATES = [.00001, 0.0001, 0.001, 0.01, 0.1]
-KEEP_RATES = [.5, .65, .8]
-MOMENTUM_RATES = [.25, .5, .75]
-WEIGHT_DECAY_RATES = [.0005, .005, .05]
-BATCH_SIZE = 32
-BATCH_IMAGE_COUNT = 10000
-TRAIN_BATCHS = ["data_batch_1", "data_batch_2", "data_batch_3", "data_batch_4"]
-TEST_BATCHES = ["data_batch_5"]
-CLASSES = ['plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
-N_CLASSES = len(CLASSES)
-PLOT = False
 
-
-
-class Net(torch.nn.Module):
-    def __init__(self, kernel_size=5):
+class Net(nn.Module):
+    def __init__(self):
         super(Net, self).__init__()
-        self.input_size = 32 ** 2
-        self.output_size = 10
-        self.kernel_size = kernel_size
-        self.conv1 = nn.Conv2d(3, 6, self.kernel_size)
+        self.conv1 = nn.Conv2d(3, 6, 5)
         self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, self.kernel_size)
-        self.fc1 = nn.Linear(16 * self.kernel_size * self.kernel_size, 120)
+        self.f_dropout = nn.Dropout(p=0.5)
+        self.n_dropout = nn.Dropout(p=0.25)
+        self.conv2 = nn.Conv2d(6, 16, 5)
+        self.fc1 = nn.Linear(16 * 5 * 5, 120)
         self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, self.output_size)
+        self.fc3 = nn.Linear(84, 10)
 
     def forward(self, x):
         x = self.pool(F.relu(self.conv1(x)))
+        x = self.f_dropout(x)
         x = self.pool(F.relu(self.conv2(x)))
+        x = self.n_dropout(x)
         x = x.view(-1, 16 * 5 * 5)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
         return x
 
-    def estimate_fisher(self, data_loader, sample_size, batch_size=128):
+    def estimate_fisher(self, data_loader, sample_size, batch_size):
         loglikelihoods = []
         for x, y in data_loader:
             # x = Variable(x).cuda() if self._is_on_cuda() else Variable(x)
@@ -186,8 +141,9 @@ class Net(torch.nn.Module):
             self.register_buffer('{}_fisher'
                                  .format(n), fisher[n].data.clone())
 
-    def ewc_loss(self, cuda=False):
+    def ewc_loss(self):
         try:
+            cuda = torch.cuda.is_available()
             losses = []
             for n, p in self.named_parameters():
                 # retrieve the consolidated mean and fisher information.

@@ -14,20 +14,6 @@ from pytorchtools import EarlyStopping
 from tqdm import tqdm
 
 
-learning_rate = 0.001
-architecture = "CNN"
-dataset_id = "cifar-10"
-batch_size= 128
-
-config = dict(
-  learning_rate = 0.001,
-  weight_decay = 0.00001,
-  epoch = 100,
-  architecture = "CNN",
-  dataset_id = "cifar-10",
-  batch_size= 128,
-)
-
 def variable(t: torch.Tensor, use_cuda=True, **kwargs):
     if torch.cuda.is_available() and use_cuda:
         t = t.cuda()
@@ -76,7 +62,7 @@ class EWC(object):
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-def train(model, train_loader, valid_loader, wandb_log = True, consolidate = False, nb_class = 10, patience = 10, n_epochs =100, lr = 1e-3, weight_decay = 1e-5, fisher_estimation_sample_size = 300, cuda = False):
+def train(model, train_loader, valid_loader, batch_size, fisher_estimation_sample_size=100, wandb_log = True, consolidate = False, nb_class = 10, patience = 10, n_epochs =100, lr = 1e-3, weight_decay = 1e-5):
     # to track the training loss as the model trains
     train_losses = []
     # to track the validation loss as the model trains
@@ -98,6 +84,8 @@ def train(model, train_loader, valid_loader, wandb_log = True, consolidate = Fal
         ###################
         model.train()
         running_loss = 0.0
+        total = 0
+        correct = 0
         # data_stream = tqdm(enumerate(train_loader, 1))
         for batch, (data, target) in enumerate(train_loader):
             data, target = data.to(device), target.to(device)
@@ -112,10 +100,9 @@ def train(model, train_loader, valid_loader, wandb_log = True, consolidate = Fal
             # calculate the loss
             criterion = nn.CrossEntropyLoss()
             ce_loss = criterion(output, target)
-            cuda = torch.cuda.is_available()
             e_loss = 0
             if consolidate:
-                e_loss = model.ewc_loss(cuda = cuda)
+                e_loss = model.ewc_loss()
             loss = ce_loss + e_loss
             # backward pass: compute gradient of the loss with respect to model parameters
             loss.backward()
@@ -125,22 +112,30 @@ def train(model, train_loader, valid_loader, wandb_log = True, consolidate = Fal
             train_losses.append(loss.item())
 
             # Predictions
-            _, predicted = output.max(1)
+            _, predicted = torch.max(output.data, 1)
+            total += target.size(0)
+            correct += (predicted == target).sum().item()
 
-        print("Training DONE!")
+        # Calculate global accuracy
+        try: 
+          accuracy = 100 * correct / total
+          if wandb_log:
+            wandb.log({"accuracy": accuracy})
+
+        except: pass
 
         if consolidate:
             model.consolidate(model.estimate_fisher(
-                train_loader, fisher_estimation_sample_size
+                train_loader, fisher_estimation_sample_size, batch_size
             ))
-        correct = 0
-        total = 0
-        confusion_matrix = torch.zeros(nb_class, nb_class)
 
         ######################
         # validate the model #
         ######################
         model.eval()  # prep model for evaluation
+        correct = 0
+        total = 0
+        confusion_matrix = torch.zeros(nb_class, nb_class)
         for data, target in valid_loader:
             data, target = data.to(device), target.to(device)
             # forward pass: compute predicted outputs by passing inputs to the model
@@ -159,10 +154,6 @@ def train(model, train_loader, valid_loader, wandb_log = True, consolidate = Fal
 
         # Model Performance Statistics
         accuracy = 100 * correct / total
-        class_correct = confusion_matrix.diag()
-        class_total = confusion_matrix.sum(1)
-        class_accuracies = class_correct / class_total
-
         class_correct = confusion_matrix.diag()
         class_total = confusion_matrix.sum(1)
         class_accuracies = class_correct / class_total
@@ -191,8 +182,13 @@ def train(model, train_loader, valid_loader, wandb_log = True, consolidate = Fal
 
         print("f1 vector : ", f1)
         macro_f1 = reduce(lambda a, b: a + b, f1) / len(f1) * 100
+        macro_f1 = reduce(lambda a, b: a + b, f1) / len(f1) * 100
+        precision = reduce(lambda a, b: a + b, precision) / len(precision) * 100
+        recall = reduce(lambda a, b: a + b, recall) / len(recall) * 100
+        
         print("Macro f1 score is {:.3f}%".format(macro_f1))
         print('Accuracy of the model {:.3f}%'.format(accuracy))
+
         train_loss = np.average(train_losses)
         valid_loss = np.average(valid_losses)
         avg_train_losses.append(train_loss)
@@ -228,10 +224,8 @@ def train(model, train_loader, valid_loader, wandb_log = True, consolidate = Fal
     return model, avg_train_losses, avg_valid_losses
 
 
-def evaluate(model, test_loader, wandb_log = True, nb_classes = 10, class_names = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse',
+def evaluate(model, test_loader, batch_size, wandb_log = True, nb_classes = 10, class_names = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse',
                'ship', 'truck')):
-
-    model.to(device)
     model.eval()
     correct_list = list(0. for i in range(10))
     total_list = list(0. for i in range(10))
@@ -245,27 +239,21 @@ def evaluate(model, test_loader, wandb_log = True, nb_classes = 10, class_names 
                 break
             data, target = data.to(device), target.to(device)
             output = model(data)
-            _, preds = torch.max(output, 1)
-
-            correct = np.squeeze(preds.eq(target.data.view_as(preds)))
-
+            _, predicted = torch.max(output.data, 1)
+            total += batch_size
+            correct += (predicted == target).sum().item()
             for i in range(batch_size):
                 label = target.data[i]
-                correct_list[label] += correct[i].item()
-                total_list[label] += 1
-
-            for t, p in zip(target, preds):
+            for t, p in zip(target, predicted):
                 confusion_matrix[t, p] += 1
 
     # Calculate global accuracy
-    accuracy = sum(correct_list) / sum(total_list)
     if wandb_log:
-        wandb.log({"accuracy": accuracy})
-
-    # Calculate class accuracies
-    class_correct = confusion_matrix.diag()
-    class_total = confusion_matrix.sum(1)
-    class_accuracies = class_correct / class_total
+        try:
+          accuracy = 100 * correct / total
+          wandb.log({"accuracy": accuracy})
+        except:
+          pass
 
     # F1 score 직접 계산하기
     print(confusion_matrix)
@@ -295,16 +283,27 @@ def evaluate(model, test_loader, wandb_log = True, nb_classes = 10, class_names 
 
     # Print statistics
     macro_f1 = reduce(lambda a, b: a + b, f1) / len(f1) * 100
+    precision = reduce(lambda a, b: a + b, precision) / len(precision) * 100
+    recall = reduce(lambda a, b: a + b, recall) / len(recall) * 100
     print("Macro f1 score is {:.3f}%".format(macro_f1))
-    print('Accuracy of the model {:.3f}%'.format(accuracy))
+    try:
+      print('Accuracy of the model {:.3f}%'.format(accuracy))
+    except:
+      pass
     for i in range(nb_classes):
         print('Accuracy for {}: {:.3f}%'.format(
             class_names[i], 100 * class_accuracies[i]))
         if wandb_log:
             wandb.log({f"Accuracy of class {class_names[i]}": class_accuracies[i] * 100})
     if wandb_log:
-        wandb.log(
-            {"Precision(test)": precision, "Recall(test)": recall, "F1 Score(test)": macro_f1, "Accuracy(test)": accuracy})
+        try:
+            wandb.log(
+              {"Precision(test)": precision, "Recall(test)": recall, "F1 Score(test)": macro_f1, "Accuracy(test)": accuracy})
+        except:
+            wandb.log(
+              {"Precision(test)": precision, "Recall(test)": recall, "F1 Score(test)": macro_f1})
+        
+
 
     # Plot confusion matrix
     f = plt.figure()
