@@ -60,84 +60,149 @@ class EWC(object):
             loss += _loss.sum()
         return loss
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-def train(model, train_loader, valid_loader, batch_size, fisher_estimation_sample_size=100, wandb_log = True, consolidate = False, nb_class = 10, patience = 10, n_epochs =100, lr = 1e-3, weight_decay = 1e-5):
-    # to track the training loss as the model trains
-    train_losses = []
-    # to track the validation loss as the model trains
-    valid_losses = []
-    # to track the average training loss per epoch as the model trains
-    avg_train_losses = []
-    # to track the average validation loss per epoch as the model trains
-    avg_valid_losses = []
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=lr, weight_decay=weight_decay)
+class Train():
+    def __init__(self, num_tasks, batch_size=64, alpha=0.5, n_epochs=100, nb_class=10, patience=10, lr=1e-3,
+                 weight_decay=1e-5):
+        self.max_epoch = n_epochs
+        self.nb_class = nb_class
+        self.patience = patience
+        self.lr = lr
+        self.weight_decay = weight_decay
+        self.num_tasks = num_tasks
+        self.batch_size = batch_size
+        self.d = Data(self.batch_size)
+        self.alpha = alpha
+        self.alpha_list = [self.alpha / 2, self.alpha]
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        
+    def _mask(self, curr_tensor, prev_tensor, p):
+        binomial = torch.distributions.binomial.Binomial(probs=p)
+        mask = binomial.sample(curr_tensor.size())
+        mask = mask.to(self.device)
+        curr=nn.Parameter(curr_tensor * mask)
+        prev=nn.Parameter(prev_tensor * (1-mask))
+        return curr+prev
+    
+    def _copyLayer(self, past_model, curr_model, p):
+        '''
+        Drop transfer
+        After training for (t-1)th task, the weights and bias are transfered
+        to the new model for (t)th task with probability p
+        '''
+        past_params = dict()
+        pp = past_model.state_dict()
+        curr_params = dict()
+        cp = past_model.state_dict()
 
-    # initialize the early_stopping object
-    early_stopping = EarlyStopping(patience=patience, verbose=True)
+        trans_model = Net()
+        d = trans_model.state_dict()
+        for n, p in pp.items():
+            past_params[n] = p
+            curr_params[n] = cp[n]
+            d[n] = self._mask(curr_params[n], past_params[n], 0.5)
+        trans_model.load_state_dict(d)
+        return trans_model
+    
+    def train(self, model, task_idx=0, past_model=None, fisher_matrix_sample_size=640, wandb_log=False,
+              consolidate=False):
+        # to track the training loss as the model trains
+        train_losses = []
+        # to track the average training loss per epoch as the model trains
+        avg_train_losses = []
 
-    for epoch in range(1, n_epochs + 1):
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.SGD(model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
 
-        ###################
-        # train the model #
-        ###################
-        model.train()
-        running_loss = 0.0
-        total = 0
-        correct = 0
-        # data_stream = tqdm(enumerate(train_loader, 1))
-        for batch, (data, target) in enumerate(train_loader):
-            data, target = data.to(device), target.to(device)
-            data_size = len(data)
-            dataset_size = len(train_loader.dataset)
-            dataset_batches = len(train_loader)
+        # initialize the early_stopping object
+        if task_idx == 0:
+            print("task_idx ",task_idx)
+            self.train_loader = self.d.train_loader
+            self.valid_loader = self.d.valid_loader
+            self.early_stopping = EarlyStopping(patience=self.patience, verbose=True)
+        elif task_idx == 1:
+            print("task_idx ",task_idx)
+            self.train_loader = self.d.trainA_loader
+            self.valid_loader = self.d.validA_loader
+            self.early_stopping = EarlyStopping(patience=self.max_epoch, verbose=True)
+        elif task_idx == 2:
+            print("task_idx ",task_idx)
+            self.train_loader = self.d.trainB_loader
+            self.valid_loader = self.d.validB_loader
+            self.early_stopping = EarlyStopping(patience=self.patience, verbose=True)
+        
+        self.test_loader = self.d.test_loader
+        model.to(self.device)
+        if past_model != None:
+            past_model.to(self.device)
+        
+        for epoch in range(1, self.max_epoch + 1):
 
-            # clear the gradients of all optimized variables
-            optimizer.zero_grad()
-            # forward pass: compute predicted outputs by passing inputs to the model
-            output = model(data)
-            # calculate the loss
-            criterion = nn.CrossEntropyLoss()
-            ce_loss = criterion(output, target)
-            e_loss = 0
+            ###################
+            # train the model #
+            ###################
+            running_loss = 0.0
+            total = 0
+            correct = 0
+            for batch, (data, target) in enumerate(self.train_loader):
+                data, target = data.to(self.device), target.to(self.device)
+                optimizer.zero_grad()
+                output = model(data)
+                ce_loss, e_loss = criterion(output, target), 0
+                if consolidate:
+                    e_loss = model.ewc_loss()
+                loss = ce_loss + e_loss
+                loss.backward()
+                optimizer.step()
+                train_losses.append(loss.item())
+
+                train_loss = np.average(train_losses)
+                avg_train_losses.append(train_loss)
+
+
+                # Predictions
+                _, predicted = torch.max(output.data, 1)
+                total += target.size(0)
+                correct += (predicted == target).sum().item()
+
+
+            # Calculate global accuracy
+            try:
+                accuracy = 100 * correct / total
+                if wandb_log:
+                    wandb.log({"accuracy": accuracy})
+
+            except:
+                pass
+
             if consolidate:
-                e_loss = model.ewc_loss()
-            loss = ce_loss + e_loss
-            # backward pass: compute gradient of the loss with respect to model parameters
-            loss.backward()
-            # perform a single optimization step (parameter update)
-            optimizer.step()
-            # record training loss
-            train_losses.append(loss.item())
+                self.fisher_estimation_sample_size = fisher_matrix_sample_size
+                model.consolidate(model.estimate_fisher(
+                    self.train_loader, self.fisher_estimation_sample_size, self.batch_size
+                ))
 
-            # Predictions
-            _, predicted = torch.max(output.data, 1)
-            total += target.size(0)
-            correct += (predicted == target).sum().item()
+            
+            # clear lists to track next epoch
+            train_losses = []
+            es, avg_valid_losses = self.evaluate(model, epoch, wandb_log)
+            if es.early_stop:
+                print("Early stopping")
+                break
+        model.load_state_dict(torch.load('checkpoint.pt'))
 
-        # Calculate global accuracy
-        try: 
-          accuracy = 100 * correct / total
-          if wandb_log:
-            wandb.log({"accuracy": accuracy})
+        return model, avg_train_losses, avg_valid_losses
 
-        except: pass
-
-        if consolidate:
-            model.consolidate(model.estimate_fisher(
-                train_loader, fisher_estimation_sample_size, batch_size
-            ))
-
-        ######################
-        # validate the model #
-        ######################
+    def evaluate(self, model, epoch, wandb_log=False):
+        # to track the validation loss as the model trains
+        valid_losses = []
+        # to track the average validation loss per epoch as the model trains
+        avg_valid_losses = []
         model.eval()  # prep model for evaluation
         correct = 0
         total = 0
-        confusion_matrix = torch.zeros(nb_class, nb_class)
-        for data, target in valid_loader:
-            data, target = data.to(device), target.to(device)
+        confusion_matrix = torch.zeros(self.nb_class, self.nb_class)
+        for data, target in self.valid_loader:
+            data, target = data.to(self.device), target.to(self.device)
             # forward pass: compute predicted outputs by passing inputs to the model
             output = model(data)
             # calculate the loss
@@ -154,20 +219,11 @@ def train(model, train_loader, valid_loader, batch_size, fisher_estimation_sampl
 
         # Model Performance Statistics
         accuracy = 100 * correct / total
-        class_correct = confusion_matrix.diag()
-        class_total = confusion_matrix.sum(1)
-        class_accuracies = class_correct / class_total
 
-        TP = np.zeros(nb_class)
-        TN = np.zeros(nb_class)
-        FP = np.zeros(nb_class)
-        FN = np.zeros(nb_class)
-        precision = np.zeros(nb_class)
-        recall = np.zeros(nb_class)
-        f1 = np.zeros(nb_class)
+        TP, TN, FP, FN, precision, recall, f1 = [np.zeros(self.nb_class, dtype='float64')] * 7
 
         # Normalize confusion matrix
-        for i in range(nb_class):
+        for i in range(self.nb_class):
             TP[i] = confusion_matrix[i][i]
             TN[i] = confusion_matrix[-i][-i]
             FP[i] = confusion_matrix[i][-i]
@@ -182,135 +238,134 @@ def train(model, train_loader, valid_loader, batch_size, fisher_estimation_sampl
 
         print("f1 vector : ", f1)
         macro_f1 = reduce(lambda a, b: a + b, f1) / len(f1) * 100
-        macro_f1 = reduce(lambda a, b: a + b, f1) / len(f1) * 100
         precision = reduce(lambda a, b: a + b, precision) / len(precision) * 100
         recall = reduce(lambda a, b: a + b, recall) / len(recall) * 100
-        
+
         print("Macro f1 score is {:.3f}%".format(macro_f1))
         print('Accuracy of the model {:.3f}%'.format(accuracy))
 
-        train_loss = np.average(train_losses)
         valid_loss = np.average(valid_losses)
-        avg_train_losses.append(train_loss)
         avg_valid_losses.append(valid_loss)
 
-        epoch_len = len(str(n_epochs))
+        epoch_len = len(str(self.max_epoch))
 
-        print_msg = (f'[{epoch:>{epoch_len}}/{n_epochs:>{epoch_len}}] ' +
-                     f'train_loss: {train_loss:.5f} ' +
+        print(f'[{epoch:>{epoch_len}}/{self.max_epoch:>{epoch_len}}] ' +
                      f'valid_loss: {valid_loss:.5f}')
 
-        print(print_msg)
         if wandb_log:
             wandb.log({"Precision(valid)": precision, "Recall(valid)": recall, "F1 Score(valid)": macro_f1,
-                   "Accuracy(valid)": accuracy}, step=epoch)
-
-        # clear lists to track next epoch
-        train_losses = []
-        valid_losses = []
-
-        # early_stopping needs the validation loss to check if it has decresed,
-        # and if it has, it will make a checkpoint of the current model
-        early_stopping(valid_loss, model)
-
-        if early_stopping.early_stop:
-            print("Early stopping")
-            break
-
-    # load the last checkpoint with the best model
-
-    model.load_state_dict(torch.load('checkpoint.pt'))
-
-    return model, avg_train_losses, avg_valid_losses
-
-
-def evaluate(model, test_loader, batch_size, wandb_log = True, nb_classes = 10, class_names = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse',
-               'ship', 'truck')):
-    model.eval()
-    correct_list = list(0. for i in range(10))
-    total_list = list(0. for i in range(10))
-    correct = 0
-    total = 0
-    test_loss = 0.0
-    confusion_matrix = torch.zeros(nb_classes, nb_classes)
-    with torch.no_grad():
-        for data, target in test_loader:
-            if len(target.data) != batch_size:
-                break
-            data, target = data.to(device), target.to(device)
-            output = model(data)
-            _, predicted = torch.max(output.data, 1)
-            total += batch_size
-            correct += (predicted == target).sum().item()
-            for i in range(batch_size):
-                label = target.data[i]
-            for t, p in zip(target, predicted):
-                confusion_matrix[t, p] += 1
-
-    # Calculate global accuracy
-    if wandb_log:
-        try:
-          accuracy = 100 * correct / total
-          wandb.log({"accuracy": accuracy})
-        except:
-          pass
-
-    # F1 score 직접 계산하기
-    print(confusion_matrix)
-    class_correct = confusion_matrix.diag()
-    class_total = confusion_matrix.sum(1)
-    class_accuracies = class_correct / class_total
-
-    TP = np.zeros(nb_classes)
-    TN = np.zeros(nb_classes)
-    FP = np.zeros(nb_classes)
-    FN = np.zeros(nb_classes)
-    precision = np.zeros(nb_classes)
-    recall = np.zeros(nb_classes)
-    f1 = np.zeros(nb_classes)
-
-    # Normalize confusion matrix
-    print("confusion_matrix", confusion_matrix)
-    for i in range(nb_classes):
-        TP[i] = confusion_matrix[i][i]
-        TN[i] = confusion_matrix[-i][-i]
-        FP[i] = confusion_matrix[i][-i]
-        FN[i] = confusion_matrix[-i][i]
-        precision[i] = TP[i] / (TP[i] + FP[i])
-        recall[i] = TP[i] / (TP[i] + FN[i])
-        f1[i] = 2 * precision[i] * recall[i] / (precision[i] + recall[i])
-        confusion_matrix[i] = confusion_matrix[i] / confusion_matrix[i].sum()
-
-    # Print statistics
-    macro_f1 = reduce(lambda a, b: a + b, f1) / len(f1) * 100
-    precision = reduce(lambda a, b: a + b, precision) / len(precision) * 100
-    recall = reduce(lambda a, b: a + b, recall) / len(recall) * 100
-    print("Macro f1 score is {:.3f}%".format(macro_f1))
-    try:
-      print('Accuracy of the model {:.3f}%'.format(accuracy))
-    except:
-      pass
-    for i in range(nb_classes):
-        print('Accuracy for {}: {:.3f}%'.format(
-            class_names[i], 100 * class_accuracies[i]))
-        if wandb_log:
-            wandb.log({f"Accuracy of class {class_names[i]}": class_accuracies[i] * 100})
-    if wandb_log:
-        try:
-            wandb.log(
-              {"Precision(test)": precision, "Recall(test)": recall, "F1 Score(test)": macro_f1, "Accuracy(test)": accuracy})
-        except:
-            wandb.log(
-              {"Precision(test)": precision, "Recall(test)": recall, "F1 Score(test)": macro_f1})
+                       "Accuracy(valid)": accuracy})
+        self.early_stopping(valid_loss, model)
         
+        return self.early_stopping, avg_valid_losses
 
+    def train_drop_transfer(self, consolidate, P=5, M=0.6, E="1:1",wandb_log = True):
+        for t in range(1,self.num_tasks+1):
+            net = Net()
+            net.to(self.device)
 
-    # Plot confusion matrix
-    f = plt.figure()
-    ax = f.add_subplot(111)
-    cax = ax.imshow(confusion_matrix.numpy(), interpolation='nearest')
-    f.colorbar(cax)
-    plt.xticks(range(len(class_names)), class_names, rotation=90)
-    plt.yticks(range(len(class_names)), class_names)
-    if wandb_log:
-        wandb.log({"Confusion Matrix": plt})
+            config = dict(
+                learning_rate=0.001,
+                weight_decay=0.00001,
+                epoch=self.max_epoch,
+                momentum=0.9,
+                architecture="CNN",
+                dataset_id="cifar-10",
+                batch_size=self.batch_size,
+                early_stopping=self.patience
+            )
+
+            if t == 1:
+                print("🥰 Start Training First Task")
+                new_net, avg_train_losses, avg_valid_losses = self.train(net, task_idx=t)
+            
+
+            # Drop Transfer
+            if t>1:
+                wandb.init(
+                  project='Seq Boost',
+                  config=config,
+                  name='SeqBoost task {} + drop transfer p={} mu={} eta={}'.format(t, P, M, E))
+
+                print("🥰 Start Training Second Task")
+                past_net = Net()
+                past_net.eval()
+                new = new_net.state_dict()
+                past_net.load_state_dict(new)
+                past_net.to(self.device)
+                
+                net = self._copyLayer(past_net, net, 0.5)
+                net.to(self.device)
+                new_net, avg_train_losses, avg_valid_losses = self.train(net, task_idx=t, past_model = past_net, consolidate=consolidate, wandb_log = wandb_log)
+                
+
+    def test(self, model, wandb_log=True, class_names=('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse',
+                                                'ship', 'truck')):
+        model.eval()
+        correct = 0
+        total = 0
+        confusion_matrix = torch.zeros(self.nb_class, self.nb_class)
+
+        with torch.no_grad():
+            for data, target in self.test_loader:
+                if len(target.data) != self.batch_size:
+                    break
+                data, target = data.to(self.device), target.to(self.device)
+                output = model(data)
+                _, predicted = torch.max(output.data, 1)
+                total += self.batch_size
+                correct += (predicted == target).sum().item()
+                for i in range(self.batch_size):
+                    label = target.data[i]
+                for t, p in zip(target, predicted):
+                    confusion_matrix[t, p] += 1
+
+        # Calculate global accuracy
+        if wandb_log:
+            try:
+                accuracy = 100 * correct / total
+                wandb.log({"accuracy": accuracy})
+            except:
+                pass
+
+        # F1 score 직접 계산하기
+        print(confusion_matrix)
+        class_correct = confusion_matrix.diag()
+        class_total = confusion_matrix.sum(1)
+        class_accuracies = class_correct / class_total
+
+        TP, TN, FP, FN, precision, recall, f1 = [np.zeros(self.nb_class, dtype='float64')] * 7
+
+        # Normalize confusion matrix
+        for i in range(self.nb_class):
+            TP[i] = confusion_matrix[i][i]
+            TN[i] = confusion_matrix[-i][-i]
+            FP[i] = confusion_matrix[i][-i]
+            FN[i] = confusion_matrix[-i][i]
+            precision[i] = TP[i] / (TP[i] + FP[i])
+            recall[i] = TP[i] / (TP[i] + FN[i])
+            f1[i] = 2 * precision[i] * recall[i] / (precision[i] + recall[i])
+            confusion_matrix[i] = confusion_matrix[i] / confusion_matrix[i].sum()
+
+        # Print statistics
+        macro_f1 = reduce(lambda a, b: a + b, f1) / len(f1) * 100
+        precision = reduce(lambda a, b: a + b, precision) / len(precision) * 100
+        recall = reduce(lambda a, b: a + b, recall) / len(recall) * 100
+        print("Macro f1 score is {:.3f}%".format(macro_f1))
+        try:
+            print('Accuracy of the model {:.3f}%'.format(accuracy))
+        except:
+            pass
+        for i in range(self.nb_class):
+            print('Accuracy for {}: {:.3f}%'.format(
+                class_names[i], 100 * class_accuracies[i]))
+            if wandb_log:
+                wandb.log({f"Accuracy of class {class_names[i]}": class_accuracies[i] * 100})
+        if wandb_log:
+            try:
+                wandb.log(
+                    {"Precision(test)": precision, "Recall(test)": recall, "F1 Score(test)": macro_f1,
+                     "Accuracy(test)": accuracy})
+            except:
+                wandb.log(
+                    {"Precision(test)": precision, "Recall(test)": recall, "F1 Score(test)": macro_f1})
